@@ -37,7 +37,7 @@ range_delta_fut = list(range(2046, 2056))
 
 # strategies to run
 strats_run = [0, 1, 2, 3, 5, 6]
-print(f"Running strategies {strats_run}")
+#print(f"Running strategies {strats_run}")
 
 
 # set a name for this run (good for a configuration file) 
