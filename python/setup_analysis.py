@@ -30,6 +30,7 @@ model_projection_years = list(range(2021, 2056))
 
 # number of lhs samples (good for a configuration file)?
 n_lhs = 100
+random_seed = 8057204 # allows us to reproduce; set to None to turn off
 
 # set some climate info
 range_delta_base = list(range(2011, 2021))

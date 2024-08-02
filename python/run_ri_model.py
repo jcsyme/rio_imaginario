@@ -7,7 +7,7 @@ import numpy as np
 import os, os.path
 import pandas as pd
 import pyDOE2 as pyd
-import ri_water_model as rm
+import ri_water_model as wm
 import scipy.optimize as sco
 import setup_analysis as sa
 import time
@@ -25,9 +25,17 @@ from typing import *
 def build_futures(
     df_climate_deltas_annual: pd.DataFrame,
     df_model_data: pd.DataFrame,
-):
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Build LHS table and all futures.
+    Build LHS table and all futures. Returns a three-tuple of the following
+        form:
+
+        (
+            df_futures, 
+            df_lhs, 
+            df_lhs_untransformed,
+        )
+        
 
     Function Arguments
     ------------------
@@ -36,10 +44,19 @@ def build_futures(
     """
     # build lhs samples
     dict_f0_vals, dict_ranges = get_lhs_ranges_and_base_values(df_climate_deltas_annual)
-    df_lhs = dat.generate_lhs_samples(sa.n_lhs, dict_ranges, dict_f0_vals, sa.field_key_future)
+    df_lhs_untransformed, df_lhs = dat.generate_lhs_samples(
+        sa.n_lhs, 
+        dict_ranges, 
+        dict_values_future_0 = dict_f0_vals, 
+        field_future_id = sa.field_key_future,
+        random_seed = sa.random_seed,
+    )
 
     # get climate deltas
-    dict_climate_factor_delta_field_map = {"flow_m3s": "flow_m3s", "precipitation_mm": "precipitation_mm"}
+    dict_climate_factor_delta_field_map = {
+        "flow_m3s": "flow_m3s", 
+        "precipitation_mm": "precipitation_mm",
+    }
    
     df_climate_deltas_by_future = dat.get_climate_factor_deltas(
         df_model_data,
@@ -61,6 +78,7 @@ def build_futures(
         df_model_data[sa.field_time_period]
     )
 
+    # build 
     df_other_deltas_by_future = dat.get_linear_delta_trajectories_by_future(
         df_model_data,
         df_lhs[[x for x in df_lhs.columns if x not in dict_climate_factor_delta_field_map.keys()]],
@@ -81,7 +99,9 @@ def build_futures(
     fields_dat = sorted([x for x in df_futures.columns if x not in fields_ind])
     df_futures = df_futures[fields_ind + fields_dat]
 
-    return df_futures, df_lhs
+    out = (df_futures, df_lhs, df_lhs_untransformed)
+
+    return out
 
 
 
@@ -372,25 +392,47 @@ def write_output_csvs(
 ###                                 ###
 #######################################
 
-def main():
+def main(
+    strategies_run: Union[List[int], None] = None,
+) -> Union[Dict[str, pd.DataFrame], None]:
+    """
+    Run the RI model in parallel. 
 
+    Keyword Arguments
+    -----------------
+    - strategies_run: optional set of strategies to specify. If None, defaults
+        to sa.strats_run
+    """
     ##  SETUP INPUT DATA
 
     # read in input data
     df_attr_strategy, df_climate_deltas_annual, df_model_data, df_strategies = load_data()
 
     # sample LHS and build futures
-    df_futures, df_lhs = build_futures(df_climate_deltas_annual, df_model_data)
+    df_futures, df_lhs, df_lhs_untransformed = build_futures(df_climate_deltas_annual, df_model_data)
 
     # built the attribute table and get primary ids to run
     df_attribute_primary = build_primary_attribute(df_lhs, df_attr_strategy)
-    all_primaries = list(df_attribute_primary[
-        df_attribute_primary[sa.field_key_strategy].isin(sa.strats_run)
-    ][sa.field_key_primary])
+
+    # get strategies to run and filter primary ids
+    strats_run = (
+        sa.strats_run
+        if not isinstance(strategies_run, list)
+        else [x for x in strategies_run if x in df_attr_strategy[sa.field_key_strategy].unique()]
+    )
+    strats_run = sa.strats_run if (len(sa.strats_run) == 0) else strats_run
+
+    all_primaries = list(
+        df_attribute_primary[
+            df_attribute_primary[sa.field_key_strategy].isin(strats_run)
+        ][
+            sa.field_key_primary
+        ]
+    )
 
 
     ##  INITIAlIZE MODEL
-    model = rm.RIWaterResourcesModel()
+    model = wm.RIWaterResourcesModel()
 
 
     ##  RUN MODEL IN PARALLEL USING DATA
@@ -465,6 +507,8 @@ def main():
     write_output_csvs(dir_return, dict_out)
 
     print("Done.")
+
+    return dict_out
 
 
 

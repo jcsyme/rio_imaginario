@@ -1,42 +1,10 @@
 import pandas as pd
 import numpy as np
 import pyDOE2 as pyd
+from typing import *
 
 
-def get_annual_increase(
-    delta: float, 
-    mean_base: float, 
-    mean_fut: float, 
-    yr_base: int, 
-    range_delta_fut: list,
-    df_fut: pd.DataFrame,
-    field_apply: str,
-    field_year: str = "year"
-) -> np.ndarray:
-    """
-    Calculate an annual increase to apply baseed on a delta factor
-    
-    Function Arguments
-    ------------------
-    - delta: the climate delta to apply (factor)
-    - mean_base:  mean value of input time series during base time range used to 
-        estimate delta
-    - mean_fut:  mean value of input time series during future time range used 
-        to estimate delta
-    - range_delta_fut: list of years defining the time period for future delta
-    - df_fut: data frame giving input time series
-    - field_apply: field in df_fut to apply delta to
-    - field_year: field in df_fut denoting the year
-    """
-    
-    n = len(range_delta_fut)
-    num = n*(mean_base*(1 + delta) - mean_fut)
-    den = np.dot((np.array(df_fut[field_year]) - yr_base), np.array(df_fut[field_apply]))
-    
-    return num/den
 
-
-#
 def apply_delta_factor(
     df_climate_projection: pd.DataFrame, 
     delta: float,
@@ -49,7 +17,8 @@ def apply_delta_factor(
     scale_delta_for_inflection: bool = False
 ) -> pd.DataFrame:
     """
-
+    Support function for get_climate_factor_deltas(). Apply the deltas to a
+        baseline trajectory set. 
     """
 
     ##  AGGREGATE BY YEAR
@@ -89,7 +58,10 @@ def apply_delta_factor(
 
     #add shifts from deltas
     df_out = df_climate_projection.copy()
-    df_out[field_delta_scale] = [1 + int(x > year_cur)*(x - year_cur)*delta_apply/(yr_delta_1 - year_cur) for x in list(df_out[field_year])]
+    df_out[field_delta_scale] = [
+        1 + int(x > year_cur)*(x - year_cur)*delta_apply/(yr_delta_1 - year_cur) 
+        for x in list(df_out[field_year])
+    ]
     df_out[f"{field_apply}_w_delta"] = np.array(df_out[field_apply])*np.array(df_out[field_delta_scale])
 
     return df_out
@@ -100,11 +72,14 @@ def generate_lhs_samples(
     n: int, 
     dict_ranges: dict,
     dict_values_future_0: dict = None,
-    field_future_id: str = "future_id"
-):
-
+    field_future_id: str = "future_id",
+    random_seed: Union[int, None] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Generate dataframe of all LHS trials that are adjusted
+    Generate dataframe of all LHS trials that are adjusted. Returns a tuple of
+        the form
+
+        (df_lhs, df_lhs_transformed)
 
     Function Arguments
     ------------------
@@ -114,12 +89,14 @@ def generate_lhs_samples(
     - dict_values_future_0: dictionary of form {variable: val, ...} where 
         variable is the variable and val gives the value to specify for future 
         0. If default of None is specifed, will specify 1 for all values.
+    - field_future_id: field storing the future id, or LHS trial index
+    - random_seed: random seed to use in generating LHC trials
     """
     
     all_variables = sorted(list(dict_ranges.keys()))
     dict_values_future_0 = dict(zip(all_variables, np.ones(len(all_variables)))) if (dict_values_future_0 is None) else dict_values_future_0 
     k = len(all_variables)
-    mat_lhs = pyd.lhs(k, n)
+    mat_lhs = pyd.lhs(k, n, random_state = random_seed, )
     
     # transform the lhs trials to ranges using a min/max vector *in the same columnar order as all_variables
     vec_min = np.array([dict_ranges[x][0] for x in all_variables])
@@ -129,13 +106,141 @@ def generate_lhs_samples(
     mat_lhs_transformed = np.concatenate([base_values_f0, mat_lhs_transformed], axis = 0)
 
     # now, create a data frame associated with each LHS trial and add a future id
-    df_lhs = pd.DataFrame(mat_lhs_transformed, columns = all_variables)
-    df_lhs[field_future_id] = range(0, n + 1)
+    df_lhs = pd.DataFrame(mat_lhs, columns = all_variables)
+    df_lhs[field_future_id] = range(1, n + 1)
     df_lhs = df_lhs[[field_future_id] + all_variables]
+
+    df_lhs_transformed = pd.DataFrame(mat_lhs_transformed, columns = all_variables)
+    df_lhs_transformed[field_future_id] = range(0, n + 1)
+    df_lhs_transformed = df_lhs_transformed[[field_future_id] + all_variables]
     
-    return df_lhs
+    out = (df_lhs, df_lhs_transformed)
+
+    return out
+
+
+
+def get_annual_increase(
+    delta: float, 
+    mean_base: float, 
+    mean_fut: float, 
+    yr_base: int, 
+    range_delta_fut: list,
+    df_fut: pd.DataFrame,
+    field_apply: str,
+    field_year: str = "year"
+) -> np.ndarray:
+    """
+    Calculate an annual increase to apply based on a delta factor
     
+    Function Arguments
+    ------------------
+    - delta: the climate delta to apply (factor)
+    - mean_base:  mean value of input time series during base time range used to 
+        estimate delta
+    - mean_fut:  mean value of input time series during future time range used 
+        to estimate delta
+    - range_delta_fut: list of years defining the time period for future delta
+    - df_fut: data frame giving input time series
+    - field_apply: field in df_fut to apply delta to
+    - field_year: field in df_fut denoting the year
+    """
     
+    n = len(range_delta_fut)
+    num = n*(mean_base*(1 + delta) - mean_fut)
+    den = np.dot((np.array(df_fut[field_year]) - yr_base), np.array(df_fut[field_apply]))
+    
+    return num/den
+
+
+
+def get_climate_factor_deltas(
+    df_base_climate_trajectory: pd.DataFrame,
+    df_climate_deltas_annual: pd.DataFrame,
+    dict_field_traj_to_field_delta: dict,
+    years_delta_base: list,# sa.range_delta_base, 
+    years_delta_fut: list,#       sa.range_delta_fut, 
+    year_base_uncertainty: int, #max(sa.model_historical_years)
+    drop_climate_delta_duplicate_keys: bool = True,
+    field_future_id: str = "future_id",
+    fields_date: list = ["year", "month"],
+    field_append_w_delta: str = "w_delta",
+) -> pd.DataFrame:
+    """
+    Apply climate deltas to a base trajectory. Returns a data frame of 
+        trajectories modified to reflect climate deltas.
+
+    - df_base_climate_trajectory: data frame with base climate trajectories to 
+        modify with deltas
+    - df_climate_deltas_annual: data frame with deltas to apply to base climate 
+        trajectories, indexed by key 'field_future_id'
+    - dict_field_traj_to_field_delta: dictionary of form 
+        {field_traj: field_delta, ...} where field_traj is a field in 
+        df_base_climate_trajectory to be modified and field_delta is a field in 
+        df_annual_deltas to use to find the delta 
+    - field_future_id: key value in df_annual_deltas to use to loop to apply 
+        deltas
+    - years_delta_base: list of years (integers) that the delta changes from
+    - years_delta_fut: list of years (integers) used to calcualte the delta 
+        target as change from base
+    - year_base: base year, or last year before uncertainty begins
+    - drop_climate_delta_duplicate_keys: if the climate data frame contains 
+        multiple instances of the key, drop duplicate rows? If True, keeps first 
+        instance by default. 
+    - field_future_id: default 'future_id'. Must be contained in 
+        df_climate_deltas_annual. Used to determine scenario key values to loop 
+        over.
+    - fields_date: default ["year", "month"]. Fields necessary to define dates.
+         Must include year.
+    """
+
+    # initialiez some important pieces
+    all_key_values = set(df_climate_deltas_annual[field_future_id])
+    if (len(df_climate_deltas_annual) != len(all_key_values)) & drop_climate_delta_duplicate_keys:
+        df_climate_deltas_annual.drop_duplicates(subset = [field_future_id], keep = "first")
+    all_key_values = sorted(list(all_key_values))
+    fields_traj = list(dict_field_traj_to_field_delta.keys())
+    
+    # intiialize the output database and add climate id columns
+    df_tmp = df_base_climate_trajectory[fields_date + fields_traj].copy()
+    df_tmp[field_future_id] = 0
+    df_tmp = df_tmp[[field_future_id] + fields_date + fields_traj]
+    df_out = [df_tmp for x in range(len(all_key_values))]
+
+    for future_id in enumerate(all_key_values):
+
+        ind, future_id = future_id
+
+        df_delta_cur = [df_base_climate_trajectory[fields_date]]
+
+        for field in fields_traj:
+            field_delta = dict_field_traj_to_field_delta[field]
+            delta_climate = float(df_climate_deltas_annual[df_climate_deltas_annual[field_future_id] == future_id][field_delta])
+    
+            # calculate delta 
+            df_delta = apply_delta_factor(
+                df_base_climate_trajectory[fields_date + [field]], 
+                delta_climate,
+                years_delta_base, 
+                years_delta_fut, 
+                year_base_uncertainty,
+                field
+            )
+            
+            df_delta = df_delta[fields_date + [f"{field}_{field_append_w_delta}"]]
+            df_delta.rename(columns = {f"{field}_{field_append_w_delta}": field}, inplace = True)
+            df_delta_cur.append(df_delta[[field]])
+            
+        # no need to merge, so we'll do a horizontal concatenation
+        df_delta_cur = pd.concat(df_delta_cur, axis = 1).reset_index(drop = True)
+        df_delta_cur[field_future_id] = future_id
+        df_out[ind] = df_delta_cur[df_out[0].columns]
+
+    df_out = pd.concat(df_out, axis = 0).reset_index(drop = True)
+    
+    return df_out
+
+
 
 def get_linear_delta_trajectories_by_future(
     df_base_trajectory: pd.DataFrame,
@@ -144,7 +249,7 @@ def get_linear_delta_trajectories_by_future(
     t1_vary: int,
     field_future_id: str = "future_id",
     field_time_period: str = "time_period",
-):
+) -> pd.DataFrame:
     """
     Apply deltas to a base trajectory. Returns a data frame of trajectories 
         modified to reflect climate deltas.
@@ -212,104 +317,21 @@ def get_linear_delta_trajectories_by_future(
 
 
 
-def get_climate_factor_deltas(
-    df_base_climate_trajectory: pd.DataFrame,
-    df_climate_deltas_annual: pd.DataFrame,
-    dict_field_traj_to_field_delta: dict,
-    years_delta_base: list,# sa.range_delta_base, 
-    years_delta_fut: list,#       sa.range_delta_fut, 
-    year_base_uncertainty: int, #max(sa.model_historical_years)
-    drop_climate_delta_duplicate_keys: bool = True,
-    field_future_id: str = "future_id",
-    fields_date: list = ["year", "month"],
-    field_append_w_delta: str = "w_delta",
-) -> pd.DataFrame:
-    """
-    Apply climate deltas to a base trajectory. Returns a data frame of 
-        trajectories modified to reflect climate deltas.
-
-    - df_base_climate_trajectory: data frame with base climate trajectories to 
-        modify with deltas
-    - df_climate_deltas_annual: data frame with deltas to apply to base climate 
-        trajectories, indexed by key 'field_future_id'
-    - dict_field_traj_to_field_delta: dictionary of form 
-        {field_traj: field_delta, ...} where field_traj is a field in 
-        df_base_climate_trajectory to be modified and field_delta is a field in 
-        df_annual_deltas to use to find the delta 
-    - field_future_id: key value in df_annual_deltas to use to loop to apply 
-        deltas
-    - years_delta_base: list of years (integers) that the delta changes from
-    - years_delta_fut: list of years (integers) used to calcualte the delta 
-        target as change from base
-    - year_base: base year, or last year before uncertainty begins
-    - drop_climate_delta_duplicate_keys: if the climate data frame contains 
-        multiple instances of the key, drop duplicate rows? If True, keeps first 
-        instance by default. 
-    - field_future_id: default 'future_id'. Must be contained in 
-        df_climate_deltas_annual. Used to determine scenario key values to loop 
-        over.
-    - fields_date: default ["year", "month"]. Fields necessary to define dates.
-         Must include year.
-    """
-
-    # initialiez some important pieces
-    all_key_values = set(df_climate_deltas_annual[field_future_id])
-    if (len(df_climate_deltas_annual) != len(all_key_values)) & drop_climate_delta_duplicate_keys:
-        df_climate_deltas_annual.drop_duplicates(subset = [field_future_id], keep = "first")
-    all_key_values = sorted(list(all_key_values))
-    fields_traj = list(dict_field_traj_to_field_delta.keys())
-    
-    # intiialize the output database and add climate id columns
-    df_tmp = df_base_climate_trajectory[fields_date + fields_traj].copy()
-    df_tmp[field_future_id] = 0
-    df_tmp = df_tmp[[field_future_id] + fields_date + fields_traj]
-    df_out = [df_tmp for x in range(len(all_key_values))]
-
-    for future_id in enumerate(all_key_values):
-
-        ind, future_id = future_id
-
-        df_delta_cur = [df_base_climate_trajectory[fields_date]]
-        for field in fields_traj:
-            field_delta = dict_field_traj_to_field_delta[field]
-            delta_climate = float(df_climate_deltas_annual[df_climate_deltas_annual[field_future_id] == future_id][field_delta])
-    
-            # calculate delta 
-            df_delta = apply_delta_factor(
-                df_base_climate_trajectory[fields_date + [field]], 
-                delta_climate,
-                years_delta_base, 
-                years_delta_fut, 
-                year_base_uncertainty,
-                field
-            )
-            
-            df_delta = df_delta[fields_date + [f"{field}_{field_append_w_delta}"]]
-            df_delta.rename(columns = {f"{field}_{field_append_w_delta}": field}, inplace = True)
-            df_delta_cur.append(df_delta[[field]])
-            
-        # no need to merge, so we'll do a horizontal concatenation
-        df_delta_cur = pd.concat(df_delta_cur, axis = 1).reset_index(drop = True)
-        df_delta_cur[field_future_id] = future_id
-        df_out[ind] = df_delta_cur[df_out[0].columns]
-
-    df_out = pd.concat(df_out, axis = 0).reset_index(drop = True)
-    
-    return df_out
-
-
-
-##  build the strategy table from an Excel file
 def get_strategy_table(
     fp_xlsx_strategies: str,
     field_strategy_id: str = "strategy_id",
-    fields_sort_additional: list = ["time_period"]
-) -> tuple:
+    fields_sort_additional: list = ["time_period"],
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read an XLSX file containing strategies in each sheet. If the field 
         field_strategy_id is not specified in each sheet, it will be inferred.
     
+    Function Arguments
+    ------------------
     - fp_xlsx_strategies: file path to Excel workbooks
+
+    Keyword Arguments
+    -----------------
     - field_strategy_id: field specifying the strategy id
     - fields_sort_additional: additional fields to sort by after 
         field_strategy_id
